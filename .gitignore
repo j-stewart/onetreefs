@@ -1,0 +1,6 @@
+format
+fs
+!cmd/fs
+!cmd/format
+disk.img
+mnt
