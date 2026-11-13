@@ -13,13 +13,15 @@ type Branch struct {
 
 const BranchSig uint32 = 0x65657274
 
-func (b *Branch) Upsert(seg Segment, ref BlockRef, m *SnapshotMutator) []BlockKV {
+func (b *Branch) Upsert(seg Segment, ref BlockRef, m *SnapshotMutator) ([]BlockKV, syscall.Errno) {
 	updateSize := seg.Size(m)
 	if updateSize+ref.size > m.BlockSize {
 		m.Delete(ref)
-		result := b.Rewrite(seg, m)
-		log.Printf("Replacing branch %v with %v\n", ref, result)
-		return result
+		result, errno := b.Rewrite(seg, m)
+		if errno == 0 {
+			log.Printf("Replacing branch %v with %v\n", ref, result)
+		}
+		return result, errno
 	}
 	// can't append because we don't own it
 	if m.gen != ref.birth {
@@ -27,10 +29,10 @@ func (b *Branch) Upsert(seg Segment, ref BlockRef, m *SnapshotMutator) []BlockKV
 		return b.Rewrite(seg, m)
 	}
 	return []BlockKV{m.Append(ref, seg,
-		&Branch{b.loader, b.pivot, b.log.Coalesce(seg)})}
+		&Branch{b.loader, b.pivot, b.log.Coalesce(seg)})}, 0
 }
 
-func (b *Branch) Rewrite(seg Segment, m *SnapshotMutator) []BlockKV {
+func (b *Branch) Rewrite(seg Segment, m *SnapshotMutator) ([]BlockKV, syscall.Errno) {
 	newlog := b.log.Coalesce(seg)
 	sa := m.NewBlockAllocator()
 	newBranch := &Branch{b.loader, b.pivot, newlog}
@@ -38,21 +40,25 @@ func (b *Branch) Rewrite(seg Segment, m *SnapshotMutator) []BlockKV {
 	if sa.Size() < m.BlockSize*3/4 {
 		// small enough we can just write
 		// require that we've shrunk a fair bit if we're going to just rewrite
-		return []BlockKV{m.Enqueue(newBranch)}
+		newBranchKV, errno := m.Enqueue(newBranch)
+		return []BlockKV{newBranchKV}, errno
 	}
 	// we're too big; we have to spill our log
 	newkids := make([]BlockKV, 0, len(b.pivot))
 	for i, l := range newlog.Partition(b.pivot) {
 		if len(l) > 0 {
-			newkids = append(newkids,
-				b.loader.Load(b.pivot[i].block).Upsert(l, b.pivot[i].block, m)...)
+			newestkids, errno := b.loader.Load(b.pivot[i].block).Upsert(l, b.pivot[i].block, m)
+			if errno != 0 {
+				return nil, errno
+			}
+			newkids = append(newkids, newestkids...)
 		} else {
 			newkids = append(newkids, b.pivot[i])
 		}
 	}
 	if len(newkids) == 0 {
 		// oops, we've deleted everything
-		return nil
+		return nil, 0
 	}
 
 	// TODO rebalance here
@@ -60,11 +66,18 @@ func (b *Branch) Rewrite(seg Segment, m *SnapshotMutator) []BlockKV {
 	if len(newkids) > m.MaxPivot {
 		mid := len(newkids) / 2
 		leftPivot, rightPivot := newkids[:mid], newkids[mid:]
-		return []BlockKV{
-			m.Enqueue(&Branch{b.loader, leftPivot, nil}),
-			m.Enqueue(&Branch{b.loader, rightPivot, nil})}
+		leftKV, errno := m.Enqueue(&Branch{b.loader, leftPivot, nil})
+		if errno != 0 {
+			return nil, errno
+		}
+		rightKV, errno := m.Enqueue(&Branch{b.loader, rightPivot, nil})
+		if errno != 0 {
+			return nil, errno
+		}
+		return []BlockKV{leftKV, rightKV}, 0
 	}
-	return []BlockKV{m.Enqueue(&Branch{b.loader, newkids, nil})}
+	newKV, errno := m.Enqueue(&Branch{b.loader, newkids, nil})
+	return []BlockKV{newKV}, errno
 }
 
 func (b *Branch) Leftmost() Key {

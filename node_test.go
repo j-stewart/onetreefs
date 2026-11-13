@@ -2,6 +2,7 @@ package onetreefs
 
 import (
 	"slices"
+	"syscall"
 	"testing"
 )
 
@@ -54,10 +55,13 @@ func TestDataRead(t *testing.T) {
 	snap := createForTest(testSuperblock)
 	nkeys := 3000
 	for i := range nkeys {
-		snap.Upsert([]KV{
+		errno := snap.Upsert([]KV{
 			&DataKV{3, uint64(i), uint64(i) + 1,
 				[]byte{byte(i)}},
 		})
+		if errno != 0 {
+			t.Fatal("got error in upsert: ", errno)
+		}
 	}
 
 	dest := make([]byte, nkeys)
@@ -155,3 +159,23 @@ func TestTombstone(t *testing.T) {
 		t.Errorf("failure looking up deleted data. errno %v value %v\n", errno, kv)
 	}
 }
+
+func TestOutOfSpace(t *testing.T) {
+	var smallSuperblock = testSuperblock
+	smallSuperblock.FsSize = 4
+	snap := createForTest(smallSuperblock)
+	nkeys := 4 * 64
+	for i := range nkeys {
+		errno := snap.Upsert([]KV{
+			&DataKV{uint64(i), 0, 1024, makeBytes(0, 1024)},
+		})
+		if errno == syscall.ENOSPC {
+			return
+		}
+		if errno != 0 {
+			t.Fatal("got error in upsert: ", errno)
+		}
+	}
+	t.Fatal("never saw ENOSPC")
+}
+

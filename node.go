@@ -11,7 +11,7 @@ type Node interface {
 	Get(Key) (KV, syscall.Errno)
 	GetNext(Key) (KV, syscall.Errno)
 	GetData(inode, start, end uint64) ([]KV, syscall.Errno)
-	Upsert(Segment, BlockRef, *SnapshotMutator) []BlockKV
+	Upsert(Segment, BlockRef, *SnapshotMutator) ([]BlockKV, syscall.Errno)
 	Serialize(DataWriter)
 }
 
@@ -72,9 +72,9 @@ func (en *ErrorNode) GetData(inode, start, end uint64) ([]KV, syscall.Errno) {
 	return nil, en.errno
 }
 
-func (en *ErrorNode) Upsert(Segment, BlockRef, *SnapshotMutator) []BlockKV {
+func (en *ErrorNode) Upsert(Segment, BlockRef, *SnapshotMutator) ([]BlockKV, syscall.Errno) {
 	log.Fatalln("Tried to upsert an error node")
-	return nil
+	return nil, en.errno
 }
 
 func (en *ErrorNode) Serialize(w DataWriter) {

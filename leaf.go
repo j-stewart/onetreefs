@@ -11,16 +11,16 @@ type Leaf struct {
 
 const LeafSig uint32 = 0x6661656C
 
-func (l *Leaf) Upsert(seg Segment, ref BlockRef, a *SnapshotMutator) []BlockKV {
+func (l *Leaf) Upsert(seg Segment, ref BlockRef, a *SnapshotMutator) ([]BlockKV, syscall.Errno) {
 	updateSize := seg.Size(a)
 	newseg := l.data.Coalesce(seg).Clean()
 	if a.gen == ref.birth && updateSize+ref.size <= a.BlockSize {
 		newref := a.Append(ref, seg, &Leaf{newseg})
-		return []BlockKV{newref}
+		return []BlockKV{newref}, 0
 	}
 	a.Delete(ref)
 	if len(newseg) == 0 {
-		return nil
+		return nil, 0
 	}
 	newLeaf := &Leaf{newseg}
 	sa := a.NewBlockAllocator()
@@ -30,13 +30,17 @@ func (l *Leaf) Upsert(seg Segment, ref BlockRef, a *SnapshotMutator) []BlockKV {
 		segs := newseg.Split(a)
 		result := make([]BlockKV, len(segs))
 		for i, seg := range segs {
-			result[i] = a.Enqueue(&Leaf{seg})
-
+			var errno syscall.Errno
+			result[i], errno = a.Enqueue(&Leaf{seg})
+			if errno != 0 {
+				return nil, errno
+			}
 		}
 		log.Printf("Splitting leaf %v into %v\n", ref, result)
-		return result
+		return result, 0
 	}
-	return []BlockKV{a.Enqueue(newLeaf)}
+	newLeafKV, errno := a.Enqueue(newLeaf)
+	return []BlockKV{newLeafKV}, errno
 }
 
 func (l *Leaf) Leftmost() Key {

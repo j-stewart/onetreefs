@@ -50,7 +50,7 @@ func (snap *Snapshot) NewSnapshotMutator() *SnapshotMutator {
 	}
 }
 
-func (snap *Snapshot) Upsert(kvs []KV) {
+func (snap *Snapshot) Upsert(kvs []KV) syscall.Errno {
 	snap.lock.Lock()
 	slices.SortFunc(kvs, func(a, b KV) int { return CmpKeys(a.Key(), b.Key()) })
 
@@ -58,21 +58,34 @@ func (snap *Snapshot) Upsert(kvs []KV) {
 	var newroot BlockRef
 	rootNode := snap.sr.Load(snap.root)
 	if errNode, isErr := rootNode.(*ErrorNode); isErr {
-		snap.lastErrno = errNode.errno
 		snap.lock.Unlock()
 		log.Printf("error loading root: %s\n", errNode.errno.Error())
-		return
+		return errNode.errno
 	}
-	newroots := rootNode.Upsert(kvs, snap.root, mut)
+	newroots, errno := rootNode.Upsert(kvs, snap.root, mut)
+	if errno != 0 {
+		snap.lock.Unlock()
+		return errno
+	}
 	// work out if we need a new root
 	if len(newroots) == 1 {
 		newroot = newroots[0].block
 	} else if len(newroots) == 0 {
 		// the newroot should be an empty leaf
-		newroot = mut.Enqueue(&Leaf{nil}).block
+		ref, errno := mut.Enqueue(&Leaf{nil})
+		if errno != 0 {
+			snap.lock.Unlock()
+			return errno
+		}
+		newroot = ref.block
 	} else {
 		// the newroot should be a branch with newroots as children
-		newroot = mut.Enqueue(&Branch{snap.sr, newroots, nil}).block
+		ref, errno := mut.Enqueue(&Branch{snap.sr, newroots, nil})
+		if errno != 0 {
+			snap.lock.Unlock()
+			return errno
+		}
+		newroot = ref.block
 	}
 
 	log.Printf("Root is now %v\n", newroot)
@@ -81,22 +94,17 @@ func (snap *Snapshot) Upsert(kvs []KV) {
 	snap.deaths[snap.root] = mut.deaths
 	snap.lock.Unlock()
 
-	errno := mut.Commit()
+	errno = mut.Commit()
 	if errno != 0 {
-		snap.lock.Lock()
-		snap.lastErrno = errno
-		snap.lock.Unlock()
-		log.Printf("Failed to commit upsert: %s\n", snap.lastErrno.Error())
-		return
+		log.Printf("Failed to commit upsert: %s\n", errno.Error())
+		return errno
 	}
 	errno = snap.sr.WriteUpdate(mut.ToRootLogUpdate(newroot))
 	if snap.lastErrno != 0 {
-		snap.lock.Lock()
-		snap.lastErrno = errno
-		snap.lock.Unlock()
-		log.Printf("Failed to commit upsert to rootlog: %s\n", snap.lastErrno.Error())
-		return
+		log.Printf("Failed to commit upsert to rootlog: %s\n", errno.Error())
+		return errno
 	}
+	return 0
 }
 
 func (snap *Snapshot) GetRoot() BlockRef {
@@ -172,6 +180,9 @@ func (m *SnapshotMutator) AllocBlock() uint64 {
 		}
 	}
 	blockno := m.parent.AllocBlock()
+	if blockno == 0 {
+		return blockno
+	}
 	m.births[blockno] = true
 	return blockno
 }
@@ -206,7 +217,7 @@ func (m *SnapshotMutator) Append(ref BlockRef, seg Segment, new Node) BlockKV {
 	return BlockKV{new.Leftmost(), ref}
 }
 
-func (m *SnapshotMutator) Enqueue(node Node) BlockKV {
+func (m *SnapshotMutator) Enqueue(node Node) (BlockKV, syscall.Errno) {
 	a := m.NewBlockAllocator()
 	node.Serialize(a)
 	var sig uint32
@@ -219,11 +230,15 @@ func (m *SnapshotMutator) Enqueue(node Node) BlockKV {
 	node.Serialize(block)
 	block.Finish()
 	var blockno uint64 = m.AllocBlock()
+	if blockno == 0 {
+		// couldn't alloc
+		return BlockKV{}, syscall.ENOSPC
+	}
 	ref := BlockRef{blockno, m.gen, node.NumChildren(), block.Size()}
 	log.Printf("Enqueuing new node %v of size %d at location 0x%x", ref, block.Size(), ref.blockno*uint64(m.BlockSize))
 	m.pending[ref.blockno*uint64(m.BlockSize)] = block.data
 	m.Cache(ref, node)
-	return BlockKV{node.Leftmost(), ref}
+	return BlockKV{node.Leftmost(), ref}, 0
 }
 
 func (m *SnapshotMutator) Delete(ref BlockRef) {

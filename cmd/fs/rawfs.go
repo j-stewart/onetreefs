@@ -93,10 +93,10 @@ func (fs *OneTreeFileSystem) SetAttr(
 		attr.Owner.Gid = gid
 	}
 	kvs = append(kvs, onetreefs.SerializeAttr(attr))
-	fs.snap.Upsert(kvs)
+	errno := fs.snap.Upsert(kvs)
 	out.Attr = *attr
 	out.AttrValid = 86400
-	return fuse.OK
+	return fuse.Status(errno)
 }
 
 func (fs *OneTreeFileSystem) Mknod(
@@ -111,12 +111,12 @@ func (fs *OneTreeFileSystem) Mknod(
 		return fuse.EPERM
 	}
 	fs.MakeInode(input.Mode, input.Rdev, input.Owner, out)
-	fs.snap.Upsert([]onetreefs.KV{
-		&onetreefs.DirKV{
-			input.NodeId, onetreefs.HashFilename(name), name,
-			out.Attr.Ino, byte(out.Attr.Mode >> 12)},
-		onetreefs.SerializeAttr(&out.Attr)})
-	return fuse.OK
+	return fuse.Status(
+		fs.snap.Upsert([]onetreefs.KV{
+			&onetreefs.DirKV{
+				input.NodeId, onetreefs.HashFilename(name), name,
+				out.Attr.Ino, byte(out.Attr.Mode >> 12)},
+			onetreefs.SerializeAttr(&out.Attr)}))
 }
 
 func (fs *OneTreeFileSystem) Mkdir(
@@ -136,16 +136,16 @@ func (fs *OneTreeFileSystem) Mkdir(
 	}
 	attr.Nlink++ // for the new directory's .. entry
 	fs.MakeInode(input.Mode|syscall.S_IFDIR, 0, input.Owner, out)
-	fs.snap.Upsert([]onetreefs.KV{
-		onetreefs.SerializeAttr(attr),
-		&onetreefs.DirKV{input.NodeId, onetreefs.HashFilename(name), name,
-			out.Attr.Ino, byte(out.Attr.Mode >> 12)},
-		&onetreefs.DirKV{out.Attr.Ino, onetreefs.HashFilename("."), ".",
-			out.Attr.Ino, syscall.DT_DIR},
-		&onetreefs.DirKV{out.Attr.Ino, onetreefs.HashFilename(".."), "..",
-			input.NodeId, syscall.DT_DIR},
-		onetreefs.SerializeAttr(&out.Attr)})
-	return fuse.OK
+	return fuse.Status(
+		fs.snap.Upsert([]onetreefs.KV{
+			onetreefs.SerializeAttr(attr),
+			&onetreefs.DirKV{input.NodeId, onetreefs.HashFilename(name), name,
+				out.Attr.Ino, byte(out.Attr.Mode >> 12)},
+			&onetreefs.DirKV{out.Attr.Ino, onetreefs.HashFilename("."), ".",
+				out.Attr.Ino, syscall.DT_DIR},
+			&onetreefs.DirKV{out.Attr.Ino, onetreefs.HashFilename(".."), "..",
+				input.NodeId, syscall.DT_DIR},
+			onetreefs.SerializeAttr(&out.Attr)}))
 }
 
 func (fs *OneTreeFileSystem) Unlink(
@@ -174,8 +174,7 @@ func (fs *OneTreeFileSystem) Unlink(
 	}
 	update = append(update,
 		&onetreefs.DirKV{dkv.Inode, dkv.Hash, dkv.Filename, 0, dkv.Mode})
-	fs.snap.Upsert(update)
-	return fuse.OK
+	return fuse.Status(fs.snap.Upsert(update))
 }
 
 // Rmdir
@@ -194,11 +193,11 @@ func (fs *OneTreeFileSystem) Link(
 	}
 	attr, err := fs.RawGetAttr(input.Oldnodeid)
 	out.Attr = *attr
-	fs.snap.Upsert([]onetreefs.KV{
-		&onetreefs.DirKV{input.NodeId, onetreefs.HashFilename(name), name,
-			out.Attr.Ino, byte(out.Attr.Mode >> 12)},
-		onetreefs.SerializeAttr(&out.Attr)})
-	return fuse.OK
+	return fuse.Status(
+		fs.snap.Upsert([]onetreefs.KV{
+			&onetreefs.DirKV{input.NodeId, onetreefs.HashFilename(name), name,
+				out.Attr.Ino, byte(out.Attr.Mode >> 12)},
+			onetreefs.SerializeAttr(&out.Attr)}))
 }
 
 func (fs *OneTreeFileSystem) Symlink(
@@ -216,12 +215,12 @@ func (fs *OneTreeFileSystem) Symlink(
 	}
 	fs.MakeInode(syscall.S_IFLNK|0777, 0, header.Owner, out)
 	out.Attr.Size = uint64(len(pointedTo))
-	fs.snap.Upsert([]onetreefs.KV{
-		&onetreefs.DirKV{header.NodeId, onetreefs.HashFilename(linkName), linkName,
-			out.Attr.Ino, byte(out.Attr.Mode >> 12)},
-		onetreefs.SerializeAttr(&out.Attr),
-		&onetreefs.DataKV{out.Attr.Ino, 0, out.Attr.Size, []byte(pointedTo)}})
-	return fuse.OK
+	return fuse.Status(
+		fs.snap.Upsert([]onetreefs.KV{
+			&onetreefs.DirKV{header.NodeId, onetreefs.HashFilename(linkName), linkName,
+				out.Attr.Ino, byte(out.Attr.Mode >> 12)},
+			onetreefs.SerializeAttr(&out.Attr),
+			&onetreefs.DataKV{out.Attr.Ino, 0, out.Attr.Size, []byte(pointedTo)}}))
 }
 
 const MAX_SYMLINK = 4096
@@ -231,7 +230,7 @@ func (fs *OneTreeFileSystem) Readlink(
 	header *fuse.InHeader) (out []byte, code fuse.Status) {
 	contents := make([]byte, 0, MAX_SYMLINK)
 	out, errno := fs.snap.GetData(header.NodeId, 0, contents)
-	return out, errnoToStatus(errno)
+	return out, fuse.Status(errno)
 }
 
 // Access
@@ -250,20 +249,19 @@ func (fs *OneTreeFileSystem) Create(
 		return fuse.EPERM
 	}
 	fs.MakeInode(input.Mode, 0, input.Owner, &out.EntryOut)
-	fs.snap.Upsert([]onetreefs.KV{
-		&onetreefs.DirKV{input.NodeId, onetreefs.HashFilename(name), name,
-			out.Attr.Ino, byte(out.Attr.Mode >> 12)},
-		onetreefs.SerializeAttr(&out.Attr)})
-	return fuse.OK
+	return fuse.Status(
+		fs.snap.Upsert([]onetreefs.KV{
+			&onetreefs.DirKV{input.NodeId, onetreefs.HashFilename(name), name,
+				out.Attr.Ino, byte(out.Attr.Mode >> 12)},
+			onetreefs.SerializeAttr(&out.Attr)}))
 }
 
 func (fs *OneTreeFileSystem) Tmpfile(
 	cancel <-chan struct{},
 	input *fuse.CreateIn, out *fuse.CreateOut) (code fuse.Status) {
 	fs.MakeInode(input.Mode, 0, input.Owner, &out.EntryOut)
-	fs.snap.Upsert([]onetreefs.KV{onetreefs.SerializeAttr(&out.Attr)})
+	return fuse.Status(fs.snap.Upsert([]onetreefs.KV{onetreefs.SerializeAttr(&out.Attr)}))
 	// TODO maybe not complete
-	return fuse.OK
 }
 
 func (fs *OneTreeFileSystem) Open(
@@ -276,8 +274,8 @@ func (fs *OneTreeFileSystem) Open(
 func (fs *OneTreeFileSystem) Read(
 	cancel <-chan struct{},
 	input *fuse.ReadIn, buf []byte) (fuse.ReadResult, fuse.Status) {
-	data, err := fs.snap.GetData(input.NodeId, uint64(input.Offset), buf)
-	return fuse.ReadResultData(data), errnoToStatus(err)
+	data, errno := fs.snap.GetData(input.NodeId, uint64(input.Offset), buf)
+	return fuse.ReadResultData(data), fuse.Status(errno)
 }
 
 func (fs *OneTreeFileSystem) Write(
@@ -292,8 +290,8 @@ func (fs *OneTreeFileSystem) Write(
 		attr.Size = uint64(input.Offset) + uint64(input.Size)
 		kvs = append(kvs, onetreefs.SerializeAttr(attr))
 	}
-	fs.snap.Upsert(kvs)
-	return uint32(len(data)), fuse.OK
+	errno := fs.snap.Upsert(kvs)
+	return uint32(len(data)), fuse.Status(errno)
 }
 
 func (fs *OneTreeFileSystem) OpenDir(
@@ -330,9 +328,9 @@ func (fs *OneTreeFileSystem) ReadDir(
 		key = handleKV.Key()
 	}
 
-	kv, err := fs.snap.GetNext(key)
-	if err != 0 {
-		return errnoToStatus(err)
+	kv, errno := fs.snap.GetNext(key)
+	if errno != 0 {
+		return fuse.Status(errno)
 	}
 	for kv != nil {
 		if dkv, ok := kv.(*onetreefs.DirKV); ok {
@@ -351,9 +349,9 @@ func (fs *OneTreeFileSystem) ReadDir(
 			// we've read all the directory entries
 			return fuse.OK
 		}
-		kv, err = fs.snap.GetNext(kv.Key())
-		if err != 0 {
-			return errnoToStatus(err)
+		kv, errno = fs.snap.GetNext(kv.Key())
+		if errno != 0 {
+			return fuse.Status(errno)
 		}
 	}
 	return fuse.OK
@@ -387,9 +385,9 @@ func (fs *OneTreeFileSystem) StatFs(
 }
 
 func (fs *OneTreeFileSystem) GetDirEnt(parentInode uint64, name string) (*onetreefs.DirKV, fuse.Status) {
-	kv, err := fs.snap.Get(&onetreefs.DirKey{parentInode, onetreefs.HashFilename(name), name})
-	if err != 0 {
-		return nil, errnoToStatus(err)
+	kv, errno := fs.snap.Get(&onetreefs.DirKey{parentInode, onetreefs.HashFilename(name), name})
+	if errno != 0 {
+		return nil, fuse.Status(errno)
 	}
 	if kv == nil {
 		return nil, fuse.OK
@@ -398,11 +396,14 @@ func (fs *OneTreeFileSystem) GetDirEnt(parentInode uint64, name string) (*onetre
 }
 
 func (fs *OneTreeFileSystem) RawGetAttr(ino uint64) (*fuse.Attr, fuse.Status) {
-	kv, err := fs.snap.Get(&onetreefs.AttrKey{ino, ""})
+	kv, errno := fs.snap.Get(&onetreefs.AttrKey{ino, ""})
 	if kv == nil {
 		return nil, fuse.ENOENT
 	}
-	return onetreefs.DeserializeAttr(kv), errnoToStatus(err)
+	if errno != 0 {
+		return nil, fuse.Status(errno)
+	}
+	return onetreefs.DeserializeAttr(kv), fuse.OK
 }
 
 func (fs *OneTreeFileSystem) MakeInode(
@@ -422,8 +423,4 @@ func (fs *OneTreeFileSystem) MakeInode(
 	out.Attr.SetTimes(&now, &now, &now)
 	out.EntryValid = 86400 // a day
 	out.AttrValid = 86400
-}
-
-func errnoToStatus(errno syscall.Errno) fuse.Status {
-	return fuse.Status(errno)
 }

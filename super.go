@@ -232,7 +232,7 @@ var testSuperblock = Superblock{
 	PageSize:   4096,
 	MaxPivot:   32,
 	RootlogRes: 16384,
-	FsSize:     256,
+	FsSize:     1024,
 }
 
 func createForTest(sb Superblock) *Snapshot {

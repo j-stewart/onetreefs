@@ -135,6 +135,10 @@ func (rl *RootLog) AllocBlock() uint64 {
 		delete(rl.freeBlocks, blockno)
 		return blockno
 	}
+	if rl.totalFree == 0 {
+		// zero isn't a valid block
+		return 0
+	}
 	// TODO check against disk size
 	blockno := rl.lastFreeBlock
 	rl.lastFreeBlock++
