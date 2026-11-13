@@ -55,7 +55,11 @@ func Format(diskfile string) error {
 			Mode:      syscall.DT_DIR},
 	}
 	slices.SortFunc(kvs, func(a, b onetreefs.KV) int { return onetreefs.CmpKeys(a.Key(), b.Key()) })
-	return onetreefs.FormatDevice(dev, sb, kvs)
+	errno := onetreefs.FormatDevice(dev, sb, kvs)
+	if errno != 0 {
+		return errno
+	}
+	return nil
 }
 
 func main() {
