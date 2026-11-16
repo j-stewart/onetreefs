@@ -58,7 +58,7 @@ func (b *Branch) Rewrite(seg Segment, m *SnapshotMutator) []BlockKV {
 	// TODO rebalance here
 
 	if len(newkids) > m.MaxPivot {
-		mid := len(b.pivot) / 2
+		mid := len(newkids) / 2
 		leftPivot, rightPivot := newkids[:mid], newkids[mid:]
 		return []BlockKV{
 			m.Enqueue(&Branch{b.loader, leftPivot, nil}),
