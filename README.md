@@ -139,7 +139,8 @@ go build ./cmd/format && ./format disk.img
 ```
 
 Creating a disk image will write a superblock and an empty root
-log. The file will grow as new tree blocks are written.
+log. The file will grow as new tree blocks are written up to a
+hardcoded disk size of 1 gigabyte.
 
 To mount the disk image (requires FUSE):
 
@@ -182,8 +183,6 @@ Limitations:
 - Currently files that have been unlinked (deleted) are removed
   immediately when their link count goes to 0 whereas they should be
   kept around until they have been closed by all filehandles.
-- The disk image file will grow without bound because no attempt is
-  made to enforce a disk size.
 - I have some suspicions around bugs in deleting files.
 
 Future Work:
